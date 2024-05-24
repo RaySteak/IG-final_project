@@ -1,1 +1,2 @@
-# IG-final_project
+# Voxel Raycasting engine
+Adrian Gheorghiu - 2162607
