@@ -4,27 +4,7 @@
 <head>
 <title>Voxel Raycast</title>
 <!-- <script type="text/javascript" id="includedscript" src="project6.js"></script> -->
-
-<script type="text/javascript">
-document.addEventListener("keydown", keyDownTextField, false);
-function keyDownTextField(e) {
-	var keyCode = e.keyCode;
-	if(keyCode==115) {	// F4
-		document.getElementById('shader_fs').remove();
-		var head = document.getElementsByTagName('head')[0];
-		var script = document.createElement('script');
-		script.src= 'shader.fs';
-		script.id = 'shader_fs';
-		script.onload = function() {
-			primaryRT.init();
-			secondaryRT.init();
-			DrawScene();
-		}
-		head.appendChild(script);
-		console.log('New script loaded.');
-	}
-}
-</script>
+<script type="text/javascript" id="webglm" src="webglm.js"></script>
 
 <script id="raytraceVS" type="x-shader/x-vertex">
 attribute vec3 p;
@@ -32,6 +12,7 @@ uniform mat4 proj;
 uniform mat4 c2w;
 varying vec3 ray_pos;
 varying vec3 ray_dir;
+
 void main()
 {
     gl_Position = proj * vec4(p,1);
@@ -48,14 +29,27 @@ const transZmin = 1.001;
 const transZmax = 10;
 const maxBounceLimit = 16;
 
+const moveSpeed = 3;
+
 var canvas, gl;
 var perspectiveMatrix;	// perspective projection matrix
 
 var environmentTexture;
 var bumpMap;
 
-var viewRotX=0, viewRotZ=0, transZ=3;
+var viewRotY = 0, viewRotX = 0;
+var cameraPos = [0, 0, 2], cameraForward = [0, 0, 1], cameraUp = [0, 1, 0];
+var cameraRotX = 0;
 var primaryRT, secondaryRT;
+
+var keyStates = new Array(256).fill(false);
+var placeBlock = false;
+
+function chunkInd(x, y, z) {
+	return x + y * 16 + z * 16 * 16;
+}
+
+var chunkTex, chunkData;
 
 var lights = [
 	{
@@ -96,8 +90,10 @@ class RayTracer
 
 		gl.uniform1i(gl.getUniformLocation(this.prog, 'environmentMap'), 0);
 		gl.uniform1i(gl.getUniformLocation(this.prog, 'bumpMap'), 1);
+		gl.uniform1i(gl.getUniformLocation(this.prog, 'chunkData'), 2);
 
 		this.updateProj();
+		this.updateChunk();
 	}
 	updateProj()
 	{
@@ -105,6 +101,14 @@ class RayTracer
 		gl.useProgram( this.prog );
 		var proj = gl.getUniformLocation( this.prog, 'proj' );
 		gl.uniformMatrix4fv( proj, false, perspectiveMatrix );
+	}
+	updateChunk()
+	{
+		if (!this.prog) return;
+		gl.useProgram(this.prog);
+		gl.activeTexture(gl.TEXTURE2);
+		gl.bindTexture(gl.TEXTURE_3D, chunkTex);
+		// gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 16, 16, 16, 0, gl.RED, gl.UNSIGNED_BYTE, chunkData);
 	}
 	setBounceLimit( bounceLimit )
 	{
@@ -120,8 +124,6 @@ class RayTracer
 			return;
 
 		gl.useProgram(this.prog);
-
-		// gl.uniformMatrix4fv( gl.getUniformLocation( this.prog, 'c2w' ), )
 
 		gl.activeTexture(gl.TEXTURE1);
 		gl.bindTexture(gl.TEXTURE_2D, bumpMap);
@@ -169,7 +171,6 @@ function InitShaderScripts()
 	client.onload = function() {
 		raytraceFS = client.responseText;
 		primaryRT.init();
-		DrawScene();
 	}
 	client.send();
 }
@@ -246,6 +247,17 @@ function InitBumpMaps()
 	// console.log(img)
 }
 
+function InitWorld()
+{
+	gl.activeTexture(gl.TEXTURE2);
+	chunkTex = gl.createTexture();
+	gl.bindTexture(gl.TEXTURE_3D, chunkTex);
+	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+	chunkData = new Uint8Array(16 * 16 * 16).fill(0);
+}
+
 // Called once to initialize
 function InitWebGL()
 {
@@ -267,6 +279,8 @@ function InitWebGL()
 	InitEnvironmentMap();
 
 	InitBumpMaps();
+
+	InitWorld();
 
 	primaryRT = new RayTracer;
 
@@ -312,34 +326,32 @@ function UpdateProjectionMatrix()
 	primaryRT.updateProj();
 }
 
-function GetTrans()
+
+
+function UpdateScene(deltaTime)
 {
-	function dot(a,b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
-
-	var cz = Math.cos( viewRotZ );
-	var sz = Math.sin( viewRotZ );
-	var cx = Math.cos( viewRotX );
-	var sx = Math.sin( viewRotX );
-
-	var z = [ cx*sz, -cx*cz, sx ];
-	var c = [ z[0]*transZ, z[1]*transZ, z[2]*transZ ];	
-	var xlen = Math.sqrt( z[0]*z[0] + z[1]*z[1] );
-	var x = [ -z[1]/xlen, z[0]/xlen, 0 ];
-	var y = [ z[1]*x[2] - z[2]*x[1], z[2]*x[0] - z[0]*x[2], z[0]*x[1] - z[1]*x[0] ];
+	let moveDir = [0, 0, 0]
+	forward = vecNormalize([cameraForward[0], 0, cameraForward[2]])
+	if (keyStates[87]) // W
+			moveDir = vecAdd(moveDir, vecScale(forward, -1));
+	if (keyStates[83]) // S
+			moveDir = vecAdd(moveDir, vecScale(forward, 1));
+	if (keyStates[65]) // A
+			moveDir = vecAdd(moveDir, vecScale(vecCross(cameraUp, cameraForward), -1));
+	if (keyStates[68]) // D
+			moveDir = vecAdd(moveDir, vecScale(vecCross(cameraUp, cameraForward), 1));
+	if (keyStates[16]) // Shift
+			moveDir = vecAdd(moveDir, vecScale([0, 1, 0], -1));
+	if (keyStates[32]) // Space
+			moveDir = vecAdd(moveDir, vecScale([0, 1, 0], 1));
 	
-	var worldToCam = [
-		x[0], y[0], z[0], 0,
-		x[1], y[1], z[1], 0,
-		x[2], y[2], z[2], 0,
-		-dot(x,c), -dot(y,c), -dot(z,c), 1,
-	];
-	var camToWorld = [
-		x[0], x[1], x[2], 0,
-		y[0], y[1], y[2], 0,
-		z[0], z[1], z[2], 0,
-		c[0], c[1], c[2], 1
-	];
-	return { camToWorld:camToWorld, worldToCam:worldToCam };
+	if (moveDir[0] != 0 || moveDir[1] != 0 || moveDir[2] != 0)
+		cameraPos = vecAdd(cameraPos, vecScale(vecNormalize(moveDir), moveSpeed * deltaTime));
+
+	if (placeBlock) {
+		
+		placeBlock = false;
+	}
 }
 
 // This is the main function that handled WebGL drawing
@@ -347,8 +359,8 @@ function DrawScene()
 {
 	gl.flush();
 	
-	var trans = GetTrans();
-	var mvp = MatrixMult(perspectiveMatrix, trans.worldToCam);
+	var trans = lookAt(cameraPos, cameraForward, cameraUp);
+	var mvp = matMul(perspectiveMatrix, trans.worldToCam);
 
 	// Clear the screen and the depth buffer.
 	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -396,21 +408,19 @@ function CompileShader( type, source )
 	return shader;
 }
 
-// Multiplies two matrices and returns the result A*B.
-// The arguments A and B are arrays, representing column-major matrices.
-function MatrixMult( A, B )
+async function RunRayTracer()
 {
-	var C = [];
-	for ( var i=0; i<4; ++i ) {
-		for ( var j=0; j<4; ++j ) {
-			var v = 0;
-			for ( var k=0; k<4; ++k ) {
-				v += A[j+4*k] * B[k+4*i];
-			}
-			C.push(v);
-		}
+	lastTime = Date.now() / 1000.0;
+	while (true) {
+		await new Promise(r => setTimeout(r, 20));
+		curTime = Date.now() / 1000.0;
+		deltaTime = curTime - lastTime;
+		lastTime = curTime;
+
+		UpdateScene(deltaTime);
+
+		DrawScene();
 	}
-	return C;
 }
 
 window.onload = function() {
@@ -420,35 +430,61 @@ window.onload = function() {
 		if ( transZ < transZmin ) transZ = transZmin;
 		if ( transZ > transZmax ) transZ = transZmax;
 		UpdateProjectionMatrix();
-		DrawScene();
 	}
 	canvas.onwheel = function() { canvas.zoom(0.3*event.deltaY); }
 	canvas.onmousedown = function() {
 		var cx = event.clientX;
 		var cy = event.clientY;
 		if ( event.ctrlKey ) {
-			canvas.onmousemove = function() {
-				canvas.zoom(5*(event.clientY - cy));
-				cy = event.clientY;
-			}
+			placeBlock = true;
 		} else {
 			canvas.onmousemove = function() {
-				viewRotZ += (cx - event.clientX)/canvas.width*5;
-				viewRotX -= (cy - event.clientY)/canvas.height*5;
+
+				viewRotY += (cx - event.clientX)/canvas.width*5;
+				viewRotX += (cy - event.clientY)/canvas.height*5;
 				cx = event.clientX;
 				cy = event.clientY;
+
 				const eps = 0.01;
-				if ( viewRotX < -0.1 ) viewRotX = -0.1;
-				if ( viewRotX > Math.PI/2 - eps ) viewRotX = Math.PI/2 - eps;
-				UpdateProjectionMatrix();
-				DrawScene();
+				if (viewRotX < -Math.PI / 2 + eps) viewRotX = -Math.PI / 2 + eps;
+				if (viewRotX > Math.PI/2 - eps ) viewRotX = Math.PI / 2 - eps;
+
+				cameraForward = matVecMul(rotX(viewRotX), [0, 0, 1, 1]);
+				cameraForward = matVecMul(rotY(viewRotY), cameraForward);
+				cameraUp = matVecMul(rotX(viewRotX), [0, 1, 0, 1]);
+				cameraUp = matVecMul(rotY(viewRotY), cameraUp);
 			}
 		}
 	}
 	canvas.onmouseup = canvas.onmouseleave = function() {
 		canvas.onmousemove = null;
 	}
+	function keyDownListener(e) {
+		keyStates[e.keyCode] = true;
+		// case 115:	// F4
+		// 	document.getElementById('shader_fs').remove();
+		// 	var head = document.getElementsByTagName('head')[0];
+		// 	var script = document.createElement('script');
+		// 	script.src= 'shader.fs';
+		// 	script.id = 'shader_fs';
+		// 	script.onload = function() {
+		// 		primaryRT.init();
+		// 		secondaryRT.init();
+		// 		DrawScene();
+		// 	}
+		// 	head.appendChild(script);
+		// 	console.log('New script loaded.');
+		// 	break;
+		// }
+	}
+	document.addEventListener("keydown", keyDownListener, false);
+	function keyUpListener(e) {
+		keyStates[e.keyCode] = false;
+	}
+	document.addEventListener("keyup", keyUpListener, false);
+
 	DrawScene();
+	RunRayTracer();
 };
 
 function WindowResize()

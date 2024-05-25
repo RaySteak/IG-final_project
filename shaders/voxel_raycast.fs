@@ -51,29 +51,44 @@ uniform samplerCube envMap;
 uniform sampler2D bumpMap;
 // uniform int bounceLimit;
 
-// Given a ray, returns the shaded color where the ray intersects a sphere.
-// If the ray does not hit a sphere, returns the environment color.
-int get_cube_id(int x, int y, int z, inout Material material) {
-	Material defaultMaterial;
-	defaultMaterial.refraction_ind = 1.0;
-	defaultMaterial.is_refractive = true;
-
-	if (x == -2 && y == 2 && z == -2) {
-		// material.is_refractive = true;
+Material get_material(int id)
+{
+	Material material;
+	if (id == 1) {
+		material.refraction_ind = 1.1;
+		material.is_refractive = true;
+		return material;
+	} else if (id == 2) {
+		material.is_refractive = false;
 		material.k_s = vec3(1.0, 0.0, 0.0);
-		// material.k_s = texture2D(bumpMap, gl_FragCoord.xy / 512.0).rgb;
+		return material;
+	} else {
+		material.is_refractive = true;
+		material.refraction_ind = 1.0;
+		return material;
+	}
+}
+
+int get_cube_id(int x, int y, int z, inout Material material)
+{
+	// if (x < 0 || y < 0 || z < 0 || x >= 16 || y >= 16 || z >= 16) {
+	// 	material.refraction_ind = 1.0;
+	// 	material.is_refractive = true;
+	// 	return 0;
+	// }
+
+	if (x == 0 && y == 0 && z == 0) {
+		material = get_material(1);
 		return 1;
 	}
 
-	if (x == 0 && y == 0 && z == 0) {
-		// HERE, CHANGE INDEX
-		material.refraction_ind = 1.1;
-		material.is_refractive = true;
-		return 0;
+	if (x == 2 && y == 2 && z == 2) {
+		material = get_material(2);
+		return 2;
 	}
 
-	material = defaultMaterial;
-	return -1;
+	material = get_material(0);
+	return 0;
 }
 
 bool castRay(Ray ray, inout HitInfo hitInfo)
@@ -148,12 +163,16 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 		// HERE, SKIP GOING OUT OF CUBE
 		// if (cube_prev_id != -1)
 			// continue;
-		if (hitInfo.material_hit.is_refractive && hitInfo.material_in.refraction_ind != hitInfo.material_hit.refraction_ind) {
-			hit = true;
-			hitInfo.refracted = true;
-			break;
+		if (hitInfo.material_hit.is_refractive) {
+			if (hitInfo.material_in.refraction_ind != hitInfo.material_hit.refraction_ind) {
+				hit = true;
+				hitInfo.refracted = true;
+				break;
+			} else {
+				continue;
+			}
 		}
-        if (cube_cur_id != -1) {
+        if (cube_cur_id != 0) {
             hit = true;
 			hitInfo.refracted = false;
             break;
@@ -199,7 +218,7 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 vec3 skybox(vec3 dir)
 {
 	// return sin(dir * 3.14159265 * 0.001) * 0.5 + 0.5;
-	return textureCube(envMap, dir.xzy).rgb;
+	return textureCube(envMap, dir).rgb;
 }
 
 vec3 TraceRayFurther(Ray ray, vec3 k_s)
