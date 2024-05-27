@@ -93,7 +93,28 @@ class RayTracer
 		gl.useProgram(this.prog);
 		gl.activeTexture(gl.TEXTURE2);
 		gl.bindTexture(gl.TEXTURE_3D, chunkTex);
-		gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 16, 16, 16, 0, gl.RED, gl.UNSIGNED_BYTE, chunks[chunkCoordString(0, 0, 0)]);
+
+		let curChunkX = Math.floor(cameraPos[0] / 16);
+		let curChunkY = Math.floor(cameraPos[1] / 16);
+		let curChunkZ = Math.floor(cameraPos[2] / 16);
+		let chunksSideLen = renderDistance * 2 - 1;
+		let chunkDataSideLen = chunksSideLen * 16;
+		let startCornerX = (curChunkX - (renderDistance - 1)) * 16;
+		let startCornerY = (curChunkY - (renderDistance - 1)) * 16;
+		let startCornerZ = (curChunkZ - (renderDistance - 1)) * 16;
+
+		let chunkData = new Uint8Array(chunksSideLen * chunksSideLen * chunksSideLen * 4096);
+		
+		for (let x = 0; x < chunkDataSideLen; x++) {
+			for (let y = 0; y < chunkDataSideLen; y++) {
+				for (let z = 0; z < chunkDataSideLen; z++)
+					chunkData[x + y * chunkDataSideLen + z * chunkDataSideLen * chunkDataSideLen] = getCubeId(startCornerX + x, startCornerY + y, startCornerZ + z);
+			}
+		}
+
+		console.log(chunkData.find((x) => x > 0))
+
+		gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, chunkDataSideLen, chunkDataSideLen, chunkDataSideLen, 0, gl.RED, gl.UNSIGNED_BYTE, chunkData);
 	}
 	setBounceLimit( bounceLimit )
 	{
@@ -335,19 +356,21 @@ function UpdateProjectionMatrix()
 	primaryRT.updateProj();
 }
 
+function generateNewChunk(X, Y, Z) {
+	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
+	chunks[chunkCoordString(X, Y, Z)] = chunkData;
+}
+
 function getCubeId(X, Y, Z) {
 	let chunkX = Math.floor(X / 16);
 	let chunkY = Math.floor(Y / 16);
 	let chunkZ = Math.floor(Z / 16);
 	chunkCoordStr = chunkCoordString(chunkX, chunkY, chunkZ);
 
-	if (chunkCoordStr in chunks) {
+	if (chunkCoordStr in chunks)
 		return chunks[chunkCoordStr][chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))];
-	}
-	// Generate new chunk
-	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
-	chunks[chunkCoordStr] = chunkData;
-	return 0;
+	generateNewChunk(chunkX, chunkY, chunkZ);
+	return chunks[chunkCoordStr][chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))];;
 }
 
 function putCubeID(X, Y, Z, id) {
@@ -360,10 +383,8 @@ function putCubeID(X, Y, Z, id) {
 		chunks[chunkCoordStr][chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))] = id;
 		return;
 	}
-	// Generate new chunk
-	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
-	chunkData[chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))] = id;
-	chunks[chunkCoordStr] = chunkData;
+	generateNewChunk(chunkX, chunkY, chunkZ);
+	chunks[chunkCoordStr][chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))] = id;
 }
 
 function getCurCubeLookingAt() {
@@ -419,6 +440,10 @@ function getCurCubeLookingAt() {
 
 function UpdateScene(deltaTime)
 {
+	let curChunkX = Math.floor(cameraPos[0] / 16.0);
+	let curChunkY = Math.floor(cameraPos[1] / 16.0);
+	let curChunkZ = Math.floor(cameraPos[2] / 16.0);
+
 	let moveDir = [0, 0, 0]
 	forward = vecNormalize([cameraForward[0], 0, cameraForward[2]])
 	if (keyStates[87]) // W
@@ -436,6 +461,13 @@ function UpdateScene(deltaTime)
 	
 	if (moveDir[0] != 0 || moveDir[1] != 0 || moveDir[2] != 0)
 		cameraPos = vecAdd(cameraPos, vecScale(vecNormalize(moveDir), moveSpeed * deltaTime));
+
+	let newChunkX = Math.floor(cameraPos[0] / 16.0);
+	let newChunkY = Math.floor(cameraPos[1] / 16.0);
+	let newChunkZ = Math.floor(cameraPos[2] / 16.0);
+
+	if (newChunkX != curChunkX || newChunkY != curChunkY || newChunkZ != curChunkZ)
+		primaryRT.updateChunk();
 
 	let ret = getCurCubeLookingAt();
 	// if (ret != null)

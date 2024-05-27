@@ -77,13 +77,19 @@ Material get_material(int id)
 
 int get_cube_id(int x, int y, int z, inout Material material)
 {
-	if (x < 0 || y < 0 || z < 0 || x >= 16 || y >= 16 || z >= 16) {
-		material.refraction_ind = 1.0;
-		material.is_refractive = true;
-		return 0;
-	}
+	// if (x < 0 || y < 0 || z < 0 || x >= 16 || y >= 16 || z >= 16) {
+	// 	material.refraction_ind = 1.0;
+	// 	material.is_refractive = true;
+	// 	return 0;
+	// }?
 
-	int cubeId = int(texture(visibleChunks, vec3(float(x) / 16.0, float(y) / 16.0, float(z) / 16.0)).r * 255.0);
+	ivec3 curCamChunk = ivec3(floor(ray_pos / 16.0));
+	ivec3 startCorner = 16 * ivec3(curCamChunk.x - RENDER_DISTANCE + 1, curCamChunk.y - RENDER_DISTANCE + 1, curCamChunk.z - RENDER_DISTANCE + 1);
+	ivec3 adjustedPos = ivec3(x, y, z) - startCorner;
+
+	int visibleChunksLen = ((RENDER_DISTANCE * 2 - 1) * 16);
+
+	int cubeId = int(texture(visibleChunks, vec3(adjustedPos) / float(visibleChunksLen)).r * 255.0);
 	material = get_material(cubeId);
 
 	return cubeId;
