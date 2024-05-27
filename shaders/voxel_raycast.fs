@@ -9,6 +9,7 @@ precision highp sampler3D;
 #define TYPE_REFLECTION 1
 
 #define NUM_LIGHTS 1
+#define RENDER_DISTANCE 2
 
 in vec3 ray_pos;
 in vec3 ray_dir;
@@ -54,7 +55,7 @@ struct HitInfo {
 uniform Light  lights [ NUM_LIGHTS  ];
 uniform samplerCube envMap;
 uniform sampler2D bumpMap;
-uniform sampler3D chunk;
+uniform sampler3D visibleChunks;
 
 Material get_material(int id)
 {
@@ -82,7 +83,7 @@ int get_cube_id(int x, int y, int z, inout Material material)
 		return 0;
 	}
 
-	int cubeId = int(texture(chunk, vec3(float(x) / 16.0, float(y) / 16.0, float(z) / 16.0)).r * 255.0);
+	int cubeId = int(texture(visibleChunks, vec3(float(x) / 16.0, float(y) / 16.0, float(z) / 16.0)).r * 255.0);
 	material = get_material(cubeId);
 
 	return cubeId;

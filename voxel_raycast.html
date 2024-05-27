@@ -5,35 +5,17 @@
 <title>Voxel Raycast</title>
 <!-- <script type="text/javascript" id="includedscript" src="project6.js"></script> -->
 <script type="text/javascript" id="webglm" src="webglm.js"></script>
-
-<script id="raytraceVS" type="x-shader/x-vertex">#version 300 es
-in vec3 p;
-uniform mat4 proj;
-uniform mat4 c2w;
-out vec3 ray_pos;
-out vec3 ray_dir;
-// out vec3 forward;
-
-void main()
-{
-    gl_Position = proj * vec4(p,1);
-	vec4 rp = c2w * vec4(0,0,0,1);
-	ray_pos = rp.xyz;
-	vec4 rd = c2w * vec4(p,1);
-	// forward = (c2w * vec4(0,0,-1,0)).xyz;
-
-	ray_dir = rd.xyz - ray_pos;
-}
-</script>
-
 <script type="text/javascript">
 
 const transZmin = 1.001;
 const transZmax = 10;
 const maxBounceLimit = 16;
 
+const sensitivityX = 5, sensitivityY = 5;
 const moveSpeed = 3;
 const interactDistance = 5;
+
+var raytraceVS, raytraceFS;
 
 var canvas, gl;
 var perspectiveMatrix;	// perspective projection matrix
@@ -46,11 +28,15 @@ var cameraPos = [0, 0, 2], cameraForward = [0, 0, 1], cameraUp = [0, 1, 0];
 var cameraRotX = 0;
 var primaryRT, secondaryRT;
 
+var renderDistance = 2; // in chunks (considering current chunk as well)
+
 var keyStates = new Array(256).fill(false);
 var placeBlock = false;
 var destroyBlock = false;
 
-var chunkTex, chunkData;
+var chunks = {};
+
+var chunkTex;
 
 var lights = [
 	{
@@ -68,10 +54,8 @@ class RayTracer
 	init()
 	{
 		if ( this.prog ) gl.deleteProgram( this.prog );
-
-		let vs = document.getElementById('raytraceVS').text
 		
-		this.prog = InitShaderProgram(vs, raytraceFS);
+		this.prog = InitShaderProgram(raytraceVS, raytraceFS);
 		if (!this.prog)
 			return;
 		
@@ -91,7 +75,7 @@ class RayTracer
 
 		gl.uniform1i(gl.getUniformLocation(this.prog, 'environmentMap'), 0);
 		gl.uniform1i(gl.getUniformLocation(this.prog, 'bumpMap'), 1);
-		gl.uniform1i(gl.getUniformLocation(this.prog, 'chunk'), 2);
+		gl.uniform1i(gl.getUniformLocation(this.prog, 'visibleChunks'), 2);
 
 		this.updateProj();
 		this.updateChunk();
@@ -109,8 +93,7 @@ class RayTracer
 		gl.useProgram(this.prog);
 		gl.activeTexture(gl.TEXTURE2);
 		gl.bindTexture(gl.TEXTURE_3D, chunkTex);
-		console.log(chunkData);
-		gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 16, 16, 16, 0, gl.RED, gl.UNSIGNED_BYTE, chunkData);
+		gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 16, 16, 16, 0, gl.RED, gl.UNSIGNED_BYTE, chunks[chunkCoordString(0, 0, 0)]);
 	}
 	setBounceLimit( bounceLimit )
 	{
@@ -168,13 +151,19 @@ var screenQuad = {
 
 function InitShaderScripts()
 {
-	var client = new XMLHttpRequest();
-	client.open('GET', '/shaders/voxel_raycast.fs');
-	client.onload = function() {
-		raytraceFS = client.responseText;
-		primaryRT.init();
+	let client1 = new XMLHttpRequest();
+	client1.open('GET', '/shaders/voxel_raycast.vs');
+	client1.onload = function(){
+		raytraceVS = client1.responseText;
+		let client2 = new XMLHttpRequest();
+		client2.open('GET', '/shaders/voxel_raycast.fs');
+		client2.onload = function() {
+			raytraceFS = client2.responseText;
+			primaryRT.init();
+		}
+		client2.send();
 	}
-	client.send();
+	client1.send();
 }
 
 function InitScene()
@@ -239,7 +228,6 @@ function InitBumpMaps()
 	img = new Image();
 	img.src = 'images/bumpmap.png';
 	img.onload = function() {
-		console.log()
 		gl.activeTexture(gl.TEXTURE1);
 		gl.bindTexture(gl.TEXTURE_2D, bumpMap);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, this);
@@ -249,9 +237,18 @@ function InitBumpMaps()
 	// console.log(img)
 }
 
+// index in a chunk
 function chunkInd(x, y, z) {
 	return x + y * 16 + z * 16 * 16;
 }
+
+function chunkCoordString(x, y, z) {
+	return x.toString() + ":" + y.toString() + ":" + z.toString();
+}
+
+// function chunkCoordString(v) {
+	// return chunkCoordString(v[0], v[1], v[2]);
+// }
 
 function InitWorld()
 {
@@ -261,10 +258,13 @@ function InitWorld()
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-	chunkData = new Uint8Array(16 * 16 * 16).fill(0);
+
+
+	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
 	chunkData[chunkInd(0, 0, 0)] = 1;
 	chunkData[chunkInd(0, 1, 0)] = 1;
 	chunkData[chunkInd(2, 2, 2)] = 2;
+	chunks[chunkCoordString(0, 0, 0)] = chunkData;
 }
 
 // Called once to initialize
@@ -336,15 +336,34 @@ function UpdateProjectionMatrix()
 }
 
 function getCubeId(X, Y, Z) {
-	if (X < 0 || X >= 16 || Y < 0 || Y >= 16 || Z < 0 || Z >= 16)
-		return 0;
-	return chunkData[chunkInd(X, Y, Z)];
+	let chunkX = Math.floor(X / 16);
+	let chunkY = Math.floor(Y / 16);
+	let chunkZ = Math.floor(Z / 16);
+	chunkCoordStr = chunkCoordString(chunkX, chunkY, chunkZ);
+
+	if (chunkCoordStr in chunks) {
+		return chunks[chunkCoordStr][chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))];
+	}
+	// Generate new chunk
+	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
+	chunks[chunkCoordStr] = chunkData;
+	return 0;
 }
 
 function putCubeID(X, Y, Z, id) {
-	if (X < 0 || X >= 16 || Y < 0 || Y >= 16 || Z < 0 || Z >= 16)
+	let chunkX = Math.floor(X / 16);
+	let chunkY = Math.floor(Y / 16);
+	let chunkZ = Math.floor(Z / 16);
+	chunkCoordStr = chunkCoordString(chunkX, chunkY, chunkZ);
+	
+	if (chunkCoordStr in chunks) {
+		chunks[chunkCoordStr][chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))] = id;
 		return;
-	chunkData[chunkInd(X, Y, Z)] = id;
+	}
+	// Generate new chunk
+	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
+	chunkData[chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))] = id;
+	chunks[chunkCoordStr] = chunkData;
 }
 
 function getCurCubeLookingAt() {
@@ -419,8 +438,8 @@ function UpdateScene(deltaTime)
 		cameraPos = vecAdd(cameraPos, vecScale(vecNormalize(moveDir), moveSpeed * deltaTime));
 
 	let ret = getCurCubeLookingAt();
-	if (ret != null)
-		console.log(ret[0].toString() + " " + ret[1].toString());
+	// if (ret != null)
+		// console.log(ret[0].toString() + " " + ret[1].toString());
 	if (destroyBlock && ret != null) {
 		destroyPos = ret[1];
 		console.log(destroyPos);
@@ -431,13 +450,9 @@ function UpdateScene(deltaTime)
 	destroyBlock = false;
 	if (placeBlock && ret != null) {
 		placePos = ret[0];
-		if (placePos[0] >= 0 && placePos[0] < 16 && placePos[1] >= 0 && placePos[1] < 16 && placePos[2] >= 0 && placePos[2] < 16)
-		{
-			console.log(placePos);
-			chunkData[chunkInd(placePos[0], placePos[1], placePos[2])] = 1;
-			primaryRT.updateChunk();
-		}
-		
+		console.log(placePos);
+		putCubeID(placePos[0], placePos[1], placePos[2], 1);
+		primaryRT.updateChunk();
 	}
 	placeBlock = false;
 }
@@ -523,26 +538,22 @@ window.onload = function() {
 	canvas.onmousedown = function() {
 		var cx = event.clientX;
 		var cy = event.clientY;
-		if ( event.ctrlKey ) {
-			destroyBlock = true;
-		} else {
-			canvas.onmousemove = function() {
+		canvas.onmousemove = function() {
+			viewRotY += (cx - event.clientX) / canvas.width * sensitivityX;
+			viewRotX += (cy - event.clientY) / canvas.height * sensitivityY;
+			cx = event.clientX;
+			cy = event.clientY;
 
-				viewRotY += (cx - event.clientX)/canvas.width*5;
-				viewRotX += (cy - event.clientY)/canvas.height*5;
-				cx = event.clientX;
-				cy = event.clientY;
+			const eps = 0.01;
+			if (viewRotX < -Math.PI / 2 + eps)
+				viewRotX = -Math.PI / 2 + eps;
+			if (viewRotX > Math.PI/2 - eps)
+				viewRotX = Math.PI / 2 - eps;
 
-				const eps = 0.01;
-				if (viewRotX < -Math.PI / 2 + eps) viewRotX = -Math.PI / 2 + eps;
-				if (viewRotX > Math.PI/2 - eps ) viewRotX = Math.PI / 2 - eps;
-
-
-				let cameraForwardAux = matVecMul(rotX(viewRotX), [0, 0, 1, 1]);
-				cameraForward = matVecMul(rotY(viewRotY), cameraForwardAux);
-				cameraUp = matVecMul(rotX(viewRotX), [0, 1, 0, 1]);
-				cameraUp = matVecMul(rotY(viewRotY), cameraUp);
-			}
+			let cameraForwardAux = matVecMul(rotX(viewRotX), [0, 0, 1, 1]);
+			cameraForward = matVecMul(rotY(viewRotY), cameraForwardAux);
+			cameraUp = matVecMul(rotX(viewRotX), [0, 1, 0, 1]);
+			cameraUp = matVecMul(rotY(viewRotY), cameraUp);
 		}
 	}
 	canvas.oncontextmenu = function () {
@@ -554,6 +565,8 @@ window.onload = function() {
 	}
 	function keyDownListener(e) {
 		keyStates[e.keyCode] = true;
+		if (e.keyCode == 20) // Caps-Lock
+			destroyBlock = true;
 		// case 115:	// F4
 		// 	document.getElementById('shader_fs').remove();
 		// 	var head = document.getElementsByTagName('head')[0];
