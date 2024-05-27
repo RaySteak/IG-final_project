@@ -6,12 +6,13 @@
 <!-- <script type="text/javascript" id="includedscript" src="project6.js"></script> -->
 <script type="text/javascript" id="webglm" src="webglm.js"></script>
 
-<script id="raytraceVS" type="x-shader/x-vertex">
-attribute vec3 p;
+<script id="raytraceVS" type="x-shader/x-vertex">#version 300 es
+in vec3 p;
 uniform mat4 proj;
 uniform mat4 c2w;
-varying vec3 ray_pos;
-varying vec3 ray_dir;
+out vec3 ray_pos;
+out vec3 ray_dir;
+// out vec3 forward;
 
 void main()
 {
@@ -19,6 +20,8 @@ void main()
 	vec4 rp = c2w * vec4(0,0,0,1);
 	ray_pos = rp.xyz;
 	vec4 rd = c2w * vec4(p,1);
+	// forward = (c2w * vec4(0,0,-1,0)).xyz;
+
 	ray_dir = rd.xyz - ray_pos;
 }
 </script>
@@ -30,6 +33,7 @@ const transZmax = 10;
 const maxBounceLimit = 16;
 
 const moveSpeed = 3;
+const interactDistance = 5;
 
 var canvas, gl;
 var perspectiveMatrix;	// perspective projection matrix
@@ -44,10 +48,7 @@ var primaryRT, secondaryRT;
 
 var keyStates = new Array(256).fill(false);
 var placeBlock = false;
-
-function chunkInd(x, y, z) {
-	return x + y * 16 + z * 16 * 16;
-}
+var destroyBlock = false;
 
 var chunkTex, chunkData;
 
@@ -90,7 +91,7 @@ class RayTracer
 
 		gl.uniform1i(gl.getUniformLocation(this.prog, 'environmentMap'), 0);
 		gl.uniform1i(gl.getUniformLocation(this.prog, 'bumpMap'), 1);
-		gl.uniform1i(gl.getUniformLocation(this.prog, 'chunkData'), 2);
+		gl.uniform1i(gl.getUniformLocation(this.prog, 'chunk'), 2);
 
 		this.updateProj();
 		this.updateChunk();
@@ -108,7 +109,8 @@ class RayTracer
 		gl.useProgram(this.prog);
 		gl.activeTexture(gl.TEXTURE2);
 		gl.bindTexture(gl.TEXTURE_3D, chunkTex);
-		// gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 16, 16, 16, 0, gl.RED, gl.UNSIGNED_BYTE, chunkData);
+		console.log(chunkData);
+		gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, 16, 16, 16, 0, gl.RED, gl.UNSIGNED_BYTE, chunkData);
 	}
 	setBounceLimit( bounceLimit )
 	{
@@ -247,6 +249,10 @@ function InitBumpMaps()
 	// console.log(img)
 }
 
+function chunkInd(x, y, z) {
+	return x + y * 16 + z * 16 * 16;
+}
+
 function InitWorld()
 {
 	gl.activeTexture(gl.TEXTURE2);
@@ -256,6 +262,9 @@ function InitWorld()
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
 	chunkData = new Uint8Array(16 * 16 * 16).fill(0);
+	chunkData[chunkInd(0, 0, 0)] = 1;
+	chunkData[chunkInd(0, 1, 0)] = 1;
+	chunkData[chunkInd(2, 2, 2)] = 2;
 }
 
 // Called once to initialize
@@ -264,7 +273,7 @@ function InitWebGL()
 	// Initialize the WebGL canvas
 	canvas = document.getElementById("canvas");
 	canvas.oncontextmenu = function() {return false;};
-	gl = canvas.getContext("webgl", {antialias: false, depth: true});	// Initialize the GL context
+	gl = canvas.getContext("webgl2", {antialias: false, depth: true});	// Initialize the GL context
 	if (!gl) {
 		alert("Unable to initialize WebGL. Your browser or machine may not support it.");
 		return;
@@ -326,6 +335,67 @@ function UpdateProjectionMatrix()
 	primaryRT.updateProj();
 }
 
+function getCubeId(X, Y, Z) {
+	if (X < 0 || X >= 16 || Y < 0 || Y >= 16 || Z < 0 || Z >= 16)
+		return 0;
+	return chunkData[chunkInd(X, Y, Z)];
+}
+
+function putCubeID(X, Y, Z, id) {
+	if (X < 0 || X >= 16 || Y < 0 || Y >= 16 || Z < 0 || Z >= 16)
+		return;
+	chunkData[chunkInd(X, Y, Z)] = id;
+}
+
+function getCurCubeLookingAt() {
+	let lookDir = vecScale(cameraForward, -1);
+	
+	let X = Math.floor(cameraPos[0]);
+    let Y = Math.floor(cameraPos[1]);
+    let Z = Math.floor(cameraPos[2]);
+
+    let stepX = Math.sign(lookDir[0]);
+    let stepY = Math.sign(lookDir[1]);
+    let stepZ = Math.sign(lookDir[2]);
+
+    let tDeltaX = Math.abs(1.0 / lookDir[0]);
+    let tDeltaY = Math.abs(1.0 / lookDir[1]);
+    let tDeltaZ = Math.abs(1.0 / lookDir[2]);
+
+    let tMaxX = tDeltaX * (stepX > 0 ? (1.0 - (cameraPos[0] - X)) : (cameraPos[0] - X));
+    let tMaxY = tDeltaY * (stepY > 0 ? (1.0 - (cameraPos[1] - Y)) : (cameraPos[1] - Y));
+    let tMaxZ = tDeltaZ * (stepZ > 0 ? (1.0 - (cameraPos[2] - Z)) : (cameraPos[2] - Z));
+
+	let oldX, oldY, oldZ;
+    
+	while (Math.min(tMaxX, tMaxY, tMaxZ) <= interactDistance) {
+		oldX = X;
+		oldY = Y;
+		oldZ = Z;
+
+        if(tMaxX < tMaxY) {
+            if(tMaxX < tMaxZ) {
+                X = X + stepX;
+                tMaxX = tMaxX + tDeltaX;
+            } else {
+                Z = Z + stepZ;
+                tMaxZ = tMaxZ + tDeltaZ;
+            }
+        } else {
+            if(tMaxY < tMaxZ) {
+                Y = Y + stepY;
+                tMaxY = tMaxY + tDeltaY;
+            } else {
+                Z = Z + stepZ;
+                tMaxZ = tMaxZ + tDeltaZ;
+            }
+        }
+
+        if (getCubeId(X, Y, Z) != 0)
+			return [[oldX, oldY, oldZ], [X, Y, Z]];
+    }
+	return null;
+}
 
 
 function UpdateScene(deltaTime)
@@ -348,10 +418,28 @@ function UpdateScene(deltaTime)
 	if (moveDir[0] != 0 || moveDir[1] != 0 || moveDir[2] != 0)
 		cameraPos = vecAdd(cameraPos, vecScale(vecNormalize(moveDir), moveSpeed * deltaTime));
 
-	if (placeBlock) {
-		
-		placeBlock = false;
+	let ret = getCurCubeLookingAt();
+	if (ret != null)
+		console.log(ret[0].toString() + " " + ret[1].toString());
+	if (destroyBlock && ret != null) {
+		destroyPos = ret[1];
+		console.log(destroyPos);
+		putCubeID(destroyPos[0], destroyPos[1], destroyPos[2], 0);
+		primaryRT.updateChunk();
+		destroyBlock = false;
 	}
+	destroyBlock = false;
+	if (placeBlock && ret != null) {
+		placePos = ret[0];
+		if (placePos[0] >= 0 && placePos[0] < 16 && placePos[1] >= 0 && placePos[1] < 16 && placePos[2] >= 0 && placePos[2] < 16)
+		{
+			console.log(placePos);
+			chunkData[chunkInd(placePos[0], placePos[1], placePos[2])] = 1;
+			primaryRT.updateChunk();
+		}
+		
+	}
+	placeBlock = false;
 }
 
 // This is the main function that handled WebGL drawing
@@ -436,7 +524,7 @@ window.onload = function() {
 		var cx = event.clientX;
 		var cy = event.clientY;
 		if ( event.ctrlKey ) {
-			placeBlock = true;
+			destroyBlock = true;
 		} else {
 			canvas.onmousemove = function() {
 
@@ -449,12 +537,17 @@ window.onload = function() {
 				if (viewRotX < -Math.PI / 2 + eps) viewRotX = -Math.PI / 2 + eps;
 				if (viewRotX > Math.PI/2 - eps ) viewRotX = Math.PI / 2 - eps;
 
-				cameraForward = matVecMul(rotX(viewRotX), [0, 0, 1, 1]);
-				cameraForward = matVecMul(rotY(viewRotY), cameraForward);
+
+				let cameraForwardAux = matVecMul(rotX(viewRotX), [0, 0, 1, 1]);
+				cameraForward = matVecMul(rotY(viewRotY), cameraForwardAux);
 				cameraUp = matVecMul(rotX(viewRotX), [0, 1, 0, 1]);
 				cameraUp = matVecMul(rotY(viewRotY), cameraUp);
 			}
 		}
+	}
+	canvas.oncontextmenu = function () {
+		event.preventDefault();
+		placeBlock = true;
 	}
 	canvas.onmouseup = canvas.onmouseleave = function() {
 		canvas.onmousemove = null;
@@ -563,7 +656,7 @@ body {
 	padding: 0;
 	margin: 0;
 }
-input[type=checkbox], label {
+input[type=checkbox], forwardlabel {
 	cursor: hand;
 }
 input[type=range] {
@@ -617,11 +710,52 @@ canvas {
 	font-size: 70%;
 	outline: none;
 }
+
+#canvas-div {
+  position: relative;
+}
+
+#canvas {
+  display: block;
+  background: lightgrey; /* For visibility */
+}
+
+#el {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+}
+
+#el::after, #el::before {
+  content: "";
+  background: black;
+  position: absolute;
+}
+
+#el::after {
+  width: 2px; /* Thickness of the vertical line */
+  height: 20px; /* Length of the vertical line */
+  top: -10px; /* Center vertically */
+  left: -1px; /* Center horizontally */
+}
+
+#el::before {
+  width: 20px; /* Length of the horizontal line */
+  height: 2px; /* Thickness of the horizontal line */
+  top: -1px; /* Center vertically */
+  left: -10px; /* Center horizontally */
+}
 </style>
 
 </head>
 <body onresize="WindowResize()">
-<div id="canvas-div"><canvas id="canvas"></canvas></div><div id="controls-div">
+<div id="canvas-div">
+	<canvas id="canvas"></canvas>
+	<div id="el"></div>
+</div><div id="controls-div">
 <div id="buttons"><input type="button" value="V" onclick="ShowControls()"/></div>
 <div id="controls">
 <div class="control-group">

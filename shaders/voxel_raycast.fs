@@ -1,6 +1,8 @@
+#version 300 es
 
 precision highp float;
 precision highp int;
+precision highp sampler3D;
 
 #define TYPE_STOP -1
 #define TYPE_REFRACTION 0
@@ -8,8 +10,11 @@ precision highp int;
 
 #define NUM_LIGHTS 1
 
-varying vec3 ray_pos;
-varying vec3 ray_dir;
+in vec3 ray_pos;
+in vec3 ray_dir;
+// in vec3 forward;
+
+out vec4 color;
 
 struct Ray {
 	vec3 pos;
@@ -49,7 +54,7 @@ struct HitInfo {
 uniform Light  lights [ NUM_LIGHTS  ];
 uniform samplerCube envMap;
 uniform sampler2D bumpMap;
-// uniform int bounceLimit;
+uniform sampler3D chunk;
 
 Material get_material(int id)
 {
@@ -71,24 +76,16 @@ Material get_material(int id)
 
 int get_cube_id(int x, int y, int z, inout Material material)
 {
-	// if (x < 0 || y < 0 || z < 0 || x >= 16 || y >= 16 || z >= 16) {
-	// 	material.refraction_ind = 1.0;
-	// 	material.is_refractive = true;
-	// 	return 0;
-	// }
-
-	if (x == 0 && y == 0 && z == 0) {
-		material = get_material(1);
-		return 1;
+	if (x < 0 || y < 0 || z < 0 || x >= 16 || y >= 16 || z >= 16) {
+		material.refraction_ind = 1.0;
+		material.is_refractive = true;
+		return 0;
 	}
 
-	if (x == 2 && y == 2 && z == 2) {
-		material = get_material(2);
-		return 2;
-	}
+	int cubeId = int(texture(chunk, vec3(float(x) / 16.0, float(y) / 16.0, float(z) / 16.0)).r * 255.0);
+	material = get_material(cubeId);
 
-	material = get_material(0);
-	return 0;
+	return cubeId;
 }
 
 bool castRay(Ray ray, inout HitInfo hitInfo)
@@ -190,7 +187,7 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 		else
 			bump_sample = hitInfo.position.xy;
 		
-		vec3 bump = texture2D(bumpMap, bump_sample).rgb;
+		vec3 bump = texture(bumpMap, bump_sample).rgb;
 		bump = bump * 2.0 - 1.0;
 
 		if (hitInfo.normal.x != 0.0) {
@@ -218,7 +215,7 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 vec3 skybox(vec3 dir)
 {
 	// return sin(dir * 3.14159265 * 0.001) * 0.5 + 0.5;
-	return textureCube(envMap, dir).rgb;
+	return texture(envMap, dir).rgb;
 }
 
 vec3 TraceRayFurther(Ray ray, vec3 k_s)
@@ -324,8 +321,13 @@ vec4 RayTracer(Ray ray)
 
 void main()
 {
+	// if (length(cross(normalize(ray_dir), forward)) < 0.01) {
+	// 	color = vec4(0.0, 1.0, 0.0, 1.0);
+	// 	return;
+	// }
+
 	Ray primary_ray;
 	primary_ray.pos = ray_pos;
 	primary_ray.dir = ray_dir;
-	gl_FragColor = RayTracer(primary_ray);
+	color = RayTracer(primary_ray);
 }
