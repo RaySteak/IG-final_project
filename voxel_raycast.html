@@ -73,9 +73,10 @@ class RayTracer
 			gl.uniform3fv( gl.getUniformLocation( this.prog, 'lights['+i+'].intensity' ), lights[i].intensity );
 		}
 
-		gl.uniform1i(gl.getUniformLocation(this.prog, 'environmentMap'), 0);
-		gl.uniform1i(gl.getUniformLocation(this.prog, 'bumpMap'), 1);
-		gl.uniform1i(gl.getUniformLocation(this.prog, 'visibleChunks'), 2);
+		gl.uniform1i(gl.getUniformLocation(this.prog, 'visibleChunks'), 0);
+		gl.uniform1i(gl.getUniformLocation(this.prog, 'envMap'), 1);
+		gl.uniform1i(gl.getUniformLocation(this.prog, 'bumpMap'), 2);
+		gl.uniform1i(gl.getUniformLocation(this.prog, 'solidTexture'), 3);
 
 		this.updateProj();
 		this.updateChunk();
@@ -91,8 +92,7 @@ class RayTracer
 	{
 		if (!this.prog) return;
 		gl.useProgram(this.prog);
-		gl.activeTexture(gl.TEXTURE2);
-		gl.bindTexture(gl.TEXTURE_3D, chunkTex);
+		gl.activeTexture(gl.TEXTURE0);
 
 		let curChunkX = Math.floor(cameraPos[0] / 16);
 		let curChunkY = Math.floor(cameraPos[1] / 16);
@@ -130,9 +130,6 @@ class RayTracer
 			return;
 
 		gl.useProgram(this.prog);
-
-		gl.activeTexture(gl.TEXTURE1);
-		gl.bindTexture(gl.TEXTURE_2D, bumpMap);
 
 		screenQuad.draw(this.prog, trans);
 	}
@@ -196,7 +193,7 @@ function InitEnvironmentMap()
 {
 	environmentTexture = gl.createTexture();
 	
-	gl.activeTexture(gl.TEXTURE0);
+	gl.activeTexture(gl.TEXTURE0 + 1);
 	gl.bindTexture( gl.TEXTURE_CUBE_MAP, environmentTexture );
 	
 	const url = 'https://webglfundamentals.org/webgl/resources/images/computer-history-museum/';
@@ -219,11 +216,13 @@ function InitEnvironmentMap()
 
 	var loaded = 0;
 	for ( var i=0; i<6; ++i ) {
+		gl.activeTexture(gl.TEXTURE0 + 1);
 		gl.texImage2D( faces[i], 0, gl.RGBA, 128, 128, 0, gl.RGBA, gl.UNSIGNED_BYTE, null );
 		const img = new Image();
 		img.crossOrigin = "anonymous";
 		img.face = faces[i];
 		img.onload = function() {
+			gl.activeTexture(gl.TEXTURE0 + 1);
 			gl.bindTexture( gl.TEXTURE_CUBE_MAP, environmentTexture );
 			gl.texImage2D( this.face, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this );
 			loaded++;
@@ -239,7 +238,8 @@ function InitEnvironmentMap()
 
 function InitBumpMaps()
 {
-	bumpMap = gl.createTexture();
+	let bumpMap = gl.createTexture();
+	gl.activeTexture(gl.TEXTURE0 + 2);
 	gl.bindTexture(gl.TEXTURE_2D, bumpMap);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -249,13 +249,32 @@ function InitBumpMaps()
 	img = new Image();
 	img.src = 'images/bumpmap.png';
 	img.onload = function() {
-		gl.activeTexture(gl.TEXTURE1);
-		gl.bindTexture(gl.TEXTURE_2D, bumpMap);
+		gl.activeTexture(gl.TEXTURE0 + 2);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, this);
 		gl.generateMipmap(gl.TEXTURE_2D);
 	};
 
 	// console.log(img)
+}
+
+function InitSolidTextures()
+{
+	// Create a texture.
+	let tex = gl.createTexture();
+	gl.activeTexture(gl.TEXTURE0 + 3);
+	gl.bindTexture(gl.TEXTURE_3D, texture);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+	
+	img == new Image();
+	img.src = 'images/grass.jpg';
+	img.onload = function() {
+		gl.activeTexture(gl.TEXTURE0 + 3);
+		gl.texImage3D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, this);
+		gl.generateMipmap(gl.TEXTURE_2D);
+	};
 }
 
 // index in a chunk
@@ -273,7 +292,7 @@ function chunkCoordString(x, y, z) {
 
 function InitWorld()
 {
-	gl.activeTexture(gl.TEXTURE2);
+	gl.activeTexture(gl.TEXTURE0);
 	chunkTex = gl.createTexture();
 	gl.bindTexture(gl.TEXTURE_3D, chunkTex);
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -492,7 +511,7 @@ function UpdateScene(deltaTime)
 // This is the main function that handled WebGL drawing
 function DrawScene()
 {
-	gl.flush();
+	// gl.flush();
 	
 	var trans = lookAt(cameraPos, cameraForward, cameraUp);
 	var mvp = matMul(perspectiveMatrix, trans.worldToCam);
@@ -546,8 +565,10 @@ function CompileShader( type, source )
 async function RunRayTracer()
 {
 	lastTime = Date.now() / 1000.0;
+
 	while (true) {
-		await new Promise(r => setTimeout(r, 20));
+		// await new Promise(r => setTimeout(r, 1000 / framerate));
+		
 		curTime = Date.now() / 1000.0;
 		deltaTime = curTime - lastTime;
 		lastTime = curTime;
@@ -555,6 +576,20 @@ async function RunRayTracer()
 		UpdateScene(deltaTime);
 
 		DrawScene();
+
+		let sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+
+		gl.flush();
+
+		// Wait for draw to complete
+		while (true) {
+			let ret = gl.clientWaitSync(sync, 0, 0);
+			if (ret === gl.CONDITION_SATISFIED || ret === gl.ALREADY_SIGNALED)
+				break;
+			await new Promise(r => setTimeout(r, 1));
+		}
+
+		gl.deleteSync(sync);
 	}
 }
 

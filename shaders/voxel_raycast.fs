@@ -23,11 +23,13 @@ struct Ray {
 };
 
 struct Material {
-	vec3  k_d;	// diffuse coefficient
-	vec3  k_s;	// specular coefficient
-	float n;	// specular exponent
+	vec3 k_d;
+	vec3 k_s;
 	bool is_refractive;
 	float refraction_ind;
+	bool has_texture;
+	bool is_reflective;
+	float solidity; // 0.0 - 1.0, if material is refractive, how much of the ray is absorbed
 };
 
 struct Sphere {
@@ -43,12 +45,12 @@ struct Light {
 
 struct HitInfo {
 	int X, Y, Z;
-	float    t;
-	vec3     position;
-	vec3     normal;
+	float t;
+	vec3 position;
+	vec2 tex_pos;
+	vec3 normal;
 	Material material_in;
 	Material material_hit;
-	bool refracted;
 	int cube_id_hit;
 };
 
@@ -56,17 +58,30 @@ uniform Light  lights [ NUM_LIGHTS  ];
 uniform samplerCube envMap;
 uniform sampler2D bumpMap;
 uniform sampler3D visibleChunks;
+uniform sampler2D solidTexture;
 
 Material get_material(int id)
 {
 	Material material;
+	material.is_refractive = false;
+	material.is_reflective = false;
+	material.has_texture = false;
+	material.solidity = 0.0;
+	material.k_d = vec3(1.0, 1.0, 1.0);
+	material.k_s = vec3(1.0, 1.0, 1.0);
+
 	if (id == 1) {
 		material.refraction_ind = 1.1;
 		material.is_refractive = true;
+		// material.k_d = vec3(0.0, 0.3, 0.0);
+		// material.k_s = vec3(1.0, 1.0, 1.0);
+		// material.solidity = 0.5;
 		return material;
 	} else if (id == 2) {
-		material.is_refractive = false;
-		material.k_s = vec3(1.0, 0.0, 0.0);
+		material.k_d = vec3(1.0, 0.0, 0.0);
+		return material;
+	} else if (id == 3) {
+		material.has_texture = true;
 		return material;
 	} else {
 		material.is_refractive = true;
@@ -97,7 +112,7 @@ int get_cube_id(int x, int y, int z, inout Material material)
 
 bool castRay(Ray ray, inout HitInfo hitInfo)
 {
-	const int render_distance = 20;
+	const int render_distance = 30;
 	Material material_prev, material_cur;
 
 
@@ -118,7 +133,7 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 	float tMaxZ = tDeltaZ * (stepZ > 0 ? 1.0 - fract(ray.pos.z) : fract(ray.pos.z));
 
     bool hit = false;
-    
+
     for (int i = 0; i < render_distance; i++) {
 		int oldX = X;
 		int oldY = Y;
@@ -170,7 +185,6 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 		if (hitInfo.material_hit.is_refractive) {
 			if (hitInfo.material_in.refraction_ind != hitInfo.material_hit.refraction_ind) {
 				hit = true;
-				hitInfo.refracted = true;
 				break;
 			} else {
 				continue;
@@ -178,7 +192,6 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 		}
         if (cube_cur_id != 0) {
             hit = true;
-			hitInfo.refracted = false;
             break;
         }
     }
@@ -198,16 +211,19 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 		bump = bump * 2.0 - 1.0;
 
 		if (hitInfo.normal.x != 0.0) {
+			hitInfo.tex_pos = hitInfo.position.yz;
 			if (hitInfo.normal.x > 0.0)
 				hitInfo.normal = vec3(bump.z, bump.x, bump.y);
 			else
 				hitInfo.normal = vec3(-bump.z, bump.x, bump.y);
 		} else if (hitInfo.normal.y != 0.0) {
+			hitInfo.tex_pos = hitInfo.position.xz;
 			if (hitInfo.normal.y > 0.0)
 				hitInfo.normal = vec3(bump.x, bump.z, bump.y);
 			else
 				hitInfo.normal = vec3(bump.x, -bump.z, bump.y);
 		} else {
+			hitInfo.tex_pos = hitInfo.position.xy;
 			if (hitInfo.normal.z > 0.0)
 				hitInfo.normal = vec3(bump.x, bump.y, bump.z);
 			else
@@ -225,6 +241,14 @@ vec3 skybox(vec3 dir)
 	return texture(envMap, dir).rgb;
 }
 
+vec3 getMaterialColor(Material m, vec2 tex_pos)
+{
+	if (m.has_texture)
+		return texture(solidTexture, tex_pos).rgb;
+
+	return m.k_d;
+}
+
 vec3 TraceRayFurther(Ray ray, vec3 k_s)
 {
 	const float bias = 0.001; // TODO: define this somewhere else, unite with other definition
@@ -233,13 +257,13 @@ vec3 TraceRayFurther(Ray ray, vec3 k_s)
 	vec3 color = vec3(0.0, 0.0, 0.0);
 	for (int i = 0; i < bounceLimit; i++) {
 		HitInfo hitInfo;
-		int type_change = TYPE_STOP; // -1 for stop, 0 for refraction, 1 for reflection 
+		int type_change = TYPE_STOP; 
 		bool hit = castRay(ray, hitInfo);
 		if (!hit) {
 			color += k_s * skybox(ray.dir);
 			break;
 		}
-		if (hitInfo.refracted) {
+		if (hitInfo.material_hit.is_refractive) {
 			type_change = TYPE_REFRACTION;
 			vec3 new_dir = refract(ray.dir, hitInfo.normal, hitInfo.material_in.refraction_ind / hitInfo.material_hit.refraction_ind);
 
@@ -251,10 +275,14 @@ vec3 TraceRayFurther(Ray ray, vec3 k_s)
 			ray.dir = new_dir;
 		}
 		if (type_change == TYPE_STOP) {
-			color += k_s * hitInfo.material_hit.k_s;
+			color += k_s * hitInfo.material_hit.k_d;
 			break;
 		} else if (type_change == TYPE_REFRACTION) {
 			ray.pos = hitInfo.position - hitInfo.normal * bias;
+
+			vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
+			color += k_s * color_hit * hitInfo.material_hit.solidity;
+			k_s *= color_hit * (1.0 - hitInfo.material_hit.solidity);
 		} else {
 			ray.pos = hitInfo.position + hitInfo.normal * bias;
 		}
@@ -268,13 +296,14 @@ vec3 TraceRay(Ray ray)
 	const int bounceLimit = 5; // TODO: define this somewhere else
 
 	vec3 k_s = vec3(1.0, 1.0, 1.0); // TODO: do something with this
+	vec3 color = vec3(0.0, 0.0, 0.0);
 
 	HitInfo hitInfo;
 	bool hit = castRay(ray, hitInfo);
 	if (!hit)
 		return skybox(ray.dir);
 
-	if (hitInfo.refracted) {
+	if (hitInfo.material_hit.is_refractive) {
 		float n1 = hitInfo.material_in.refraction_ind;
 		float n2 = hitInfo.material_hit.refraction_ind;
 		vec3 refracted = refract(ray.dir, hitInfo.normal, n1 / n2);
@@ -286,7 +315,7 @@ vec3 TraceRay(Ray ray)
 
 		// Total internal reflection
 		if (length(refracted) == 0.0) {
-			return k_s * TraceRayFurther(reflected_ray, k_s);
+			color+= k_s * TraceRayFurther(reflected_ray, k_s);
 		} else {
 			refracted = normalize(refracted);
 			// Implement Fresnel effect with Schlick approximation
@@ -297,33 +326,41 @@ vec3 TraceRay(Ray ray)
 			refracted_ray.pos = hitInfo.position - hitInfo.normal * bias;
 			refracted_ray.dir = refracted;
 			
+			vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
+			color += k_s * color_hit * hitInfo.material_hit.solidity;
+			k_s *= color_hit * (1.0 - hitInfo.material_hit.solidity);
+
 			if (R == 0.0) // Only refraction
-				return k_s * TraceRayFurther(refracted_ray, k_s);
-			if (R == 1.0) // Only reflection
-				return k_s * TraceRayFurther(reflected_ray, k_s);
-			return k_s * mix(TraceRayFurther(refracted_ray, k_s), TraceRayFurther(reflected_ray, k_s), R);
+				color += k_s * TraceRayFurther(refracted_ray, k_s);
+			else if (R == 1.0) // Only reflection
+				color += k_s * TraceRayFurther(reflected_ray, k_s);
+			else
+				color += k_s * mix(TraceRayFurther(refracted_ray, k_s), TraceRayFurther(reflected_ray, k_s), R);
 		}
+		return color;
+	} else if (hitInfo.material_hit.is_reflective) {
+		vec3 reflected = reflect(ray.dir, hitInfo.normal);
+		Ray reflected_ray;
+		reflected_ray.pos = hitInfo.position + hitInfo.normal * bias;
+		reflected_ray.dir = reflected;
+
+		vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
+		color += k_s * color_hit;
+		k_s *= hitInfo.material_hit.k_s;
+
+		color += k_s * TraceRayFurther(reflected_ray, k_s);
+		return color;
 	}
-	return hitInfo.material_hit.k_s;
+	return hitInfo.material_hit.k_d;
 }
 
 vec4 RayTracer(Ray ray)
 {
-	const int num_passes = 1; // TODO: define this somewhere else
-
-	// TODO: why does normalizing the direction screw up everything?
 	ray.dir = normalize(ray.dir);
 	
 	vec3 color = TraceRay(ray);
 
-	return vec4(color / float(num_passes), 1.0);
-	// HitInfo hitInfo;
-	// bool hit = castRay(ray, hitInfo);
-	// if (hit) {
-    //     return vec4(1.0, 0.0, 0.0, 1.0);
-    // } else {
-	// 	return vec4( textureCube( envMap, ray.dir.xzy ).rgb, 0 );
-    // }
+	return vec4(color, 1.0);
 }
 
 void main()
