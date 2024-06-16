@@ -9,7 +9,7 @@ precision highp sampler3D;
 #define TYPE_REFLECTION 1
 
 #define NUM_LIGHTS 1
-#define RENDER_DISTANCE 2
+#define RENDER_DISTANCE_CHUNKS 2
 
 in vec3 ray_pos;
 in vec3 ray_dir;
@@ -71,17 +71,19 @@ Material get_material(int id)
 	material.k_s = vec3(1.0, 1.0, 1.0);
 
 	if (id == 1) {
-		material.refraction_ind = 1.1;
-		material.is_refractive = true;
+		// material.refraction_ind = 1.1;
+		// material.is_refractive = true;
+		material.has_texture = true;
 		// material.k_d = vec3(0.0, 0.3, 0.0);
 		// material.k_s = vec3(1.0, 1.0, 1.0);
-		// material.solidity = 0.5;
+		material.solidity = 0.0;
 		return material;
 	} else if (id == 2) {
 		material.k_d = vec3(1.0, 0.0, 0.0);
 		return material;
 	} else if (id == 3) {
-		material.has_texture = true;
+		material.is_refractive = true;
+		material.refraction_ind = 1.1;
 		return material;
 	} else {
 		material.is_refractive = true;
@@ -99,10 +101,16 @@ int get_cube_id(int x, int y, int z, inout Material material)
 	// }?
 
 	ivec3 curCamChunk = ivec3(floor(ray_pos / 16.0));
-	ivec3 startCorner = 16 * ivec3(curCamChunk.x - RENDER_DISTANCE + 1, curCamChunk.y - RENDER_DISTANCE + 1, curCamChunk.z - RENDER_DISTANCE + 1);
+	ivec3 startCorner = 16 * ivec3(curCamChunk.x - RENDER_DISTANCE_CHUNKS + 1, curCamChunk.y - RENDER_DISTANCE_CHUNKS + 1, curCamChunk.z - RENDER_DISTANCE_CHUNKS + 1);
 	ivec3 adjustedPos = ivec3(x, y, z) - startCorner;
 
-	int visibleChunksLen = ((RENDER_DISTANCE * 2 - 1) * 16);
+	int visibleChunksLen = ((RENDER_DISTANCE_CHUNKS * 2 - 1) * 16);
+	if (adjustedPos.x < 0 || adjustedPos.x >= visibleChunksLen ||
+		adjustedPos.y < 0 || adjustedPos.y >= visibleChunksLen ||
+		adjustedPos.z < 0 || adjustedPos.z >= visibleChunksLen) {
+		material = get_material(0);
+		return 0;
+	}
 
 	int cubeId = int(texture(visibleChunks, vec3(adjustedPos) / float(visibleChunksLen)).r * 255.0);
 	material = get_material(cubeId);
@@ -275,7 +283,7 @@ vec3 TraceRayFurther(Ray ray, vec3 k_s)
 			ray.dir = new_dir;
 		}
 		if (type_change == TYPE_STOP) {
-			color += k_s * hitInfo.material_hit.k_d;
+			color += k_s * getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
 			break;
 		} else if (type_change == TYPE_REFRACTION) {
 			ray.pos = hitInfo.position - hitInfo.normal * bias;
@@ -351,7 +359,7 @@ vec3 TraceRay(Ray ray)
 		color += k_s * TraceRayFurther(reflected_ray, k_s);
 		return color;
 	}
-	return hitInfo.material_hit.k_d;
+	return getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
 }
 
 vec4 RayTracer(Ray ray)
