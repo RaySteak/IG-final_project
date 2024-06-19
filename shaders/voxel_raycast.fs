@@ -85,7 +85,17 @@ Material get_material(int id)
 		material.is_refractive = true;
 		material.refraction_ind = 1.1;
 		return material;
-	} else {
+	} else if (id == 4) {
+		material.is_refractive = true;
+		material.refraction_ind = 1.1;
+		material.solidity = 0.3;
+		material.k_s = vec3(1.0, 1.0, 0.0);
+		// material.k_d = vec3(1.0, 1.0, 0.0);
+		// material.k_d = vec3(0.0, 1.0, 1.0);
+		material.k_d = vec3(1.0, 0.0, 1.0);
+		return material;
+	} else
+	{
 		material.is_refractive = true;
 		material.refraction_ind = 1.0;
 		return material;
@@ -191,7 +201,7 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 		// if (cube_prev_id != -1)
 			// continue;
 		if (hitInfo.material_hit.is_refractive) {
-			if (hitInfo.material_in.refraction_ind != hitInfo.material_hit.refraction_ind) {
+			if (hitInfo.material_in.refraction_ind != hitInfo.material_hit.refraction_ind || hitInfo.material_in.k_d != hitInfo.material_hit.k_d) {
 				hit = true;
 				break;
 			} else {
@@ -323,7 +333,7 @@ vec3 TraceRay(Ray ray)
 
 		// Total internal reflection
 		if (length(refracted) == 0.0) {
-			color+= k_s * TraceRayFurther(reflected_ray, k_s);
+			color += k_s * TraceRayFurther(reflected_ray, k_s);
 		} else {
 			refracted = normalize(refracted);
 			// Implement Fresnel effect with Schlick approximation
@@ -335,15 +345,16 @@ vec3 TraceRay(Ray ray)
 			refracted_ray.dir = refracted;
 			
 			vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
-			color += k_s * color_hit * hitInfo.material_hit.solidity;
-			k_s *= color_hit * (1.0 - hitInfo.material_hit.solidity);
+			color += k_s * (1.0 - R) * color_hit * hitInfo.material_hit.solidity; //  Out of refracted, how much is absorbed because of solidity
+			vec3 k_s_refracted = k_s * color_hit * (1.0 - hitInfo.material_hit.solidity); // Out of refracted, how much is passed through because of transparency (1-solidity)
+			vec3 k_s_reflected = k_s * hitInfo.material_hit.k_s; // How much is reflected
 
 			if (R == 0.0) // Only refraction
-				color += k_s * TraceRayFurther(refracted_ray, k_s);
+				color += k_s * TraceRayFurther(refracted_ray, k_s_refracted);
 			else if (R == 1.0) // Only reflection
-				color += k_s * TraceRayFurther(reflected_ray, k_s);
+				color += k_s * TraceRayFurther(reflected_ray, k_s_reflected);
 			else
-				color += k_s * mix(TraceRayFurther(refracted_ray, k_s), TraceRayFurther(reflected_ray, k_s), R);
+				color += k_s * mix(TraceRayFurther(refracted_ray, k_s_refracted), TraceRayFurther(reflected_ray, k_s_reflected), R);
 		}
 		return color;
 	} else if (hitInfo.material_hit.is_reflective) {

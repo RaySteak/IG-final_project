@@ -5,6 +5,7 @@
 <title>Voxel Raycast</title>
 <!-- <script type="text/javascript" id="includedscript" src="project6.js"></script> -->
 <script type="text/javascript" id="webglm" src="webglm.js"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/seedrandom/3.0.5/seedrandom.min.js"></script>
 <script type="text/javascript">
 
 const transZmin = 1.001;
@@ -18,6 +19,9 @@ const playerHeight = 1.8;
 const eyeHeight = 1.6;
 const playerWidth = 0.6;
 
+const maxTerrainHeight = 20;
+const seed = "seed";
+
 var raytraceVS, raytraceFS;
 
 var canvas, gl;
@@ -27,7 +31,7 @@ var environmentTexture;
 var bumpMap;
 
 var viewRotY = 0, viewRotX = 0;
-var cameraPos = [0, 0, 2], cameraForward = [0, 0, 1], cameraUp = [0, 1, 0];
+var cameraPos = [0.5, 0, 0.5], cameraForward = [0, 0, 1], cameraUp = [0, 1, 0];
 var cameraRotX = 0;
 var curBlock = 1;
 var fallingSpeed = 0;
@@ -291,7 +295,7 @@ function InitSolidTextures()
 	}
 	
 	let img = new Image();
-	img.src = 'images/grass.jpg';
+	img.src = 'images/grass_mc.jpg';
 	img.onload = function() {
 		gl.activeTexture(gl.TEXTURE0 + 3);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, this);
@@ -320,11 +324,17 @@ function InitWorld()
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
-	chunkData[chunkInd(0, 0, 0)] = 1;
-	chunkData[chunkInd(0, 1, 0)] = 1;
-	chunkData[chunkInd(2, 2, 2)] = 2;
-	chunks[chunkCoordString(0, 0, 0)] = chunkData;
+	cameraPos[1] = playerHeight - eyeHeight + 0.001;
+
+	while (checkBlockCollisions(getPlayerAABB()))
+		cameraPos[1] += 1;
+
+	// getCubeId(0, 0, 0);
+	// let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
+	// chunkData[chunkInd(0, 0, 0)] = 1;
+	// chunkData[chunkInd(0, 1, 0)] = 1;
+	// chunkData[chunkInd(2, 2, 2)] = 2;
+	// chunks[chunkCoordString(0, 0, 0)] = chunkData;
 }
 
 // Called once to initialize
@@ -397,14 +407,78 @@ function UpdateProjectionMatrix()
 	primaryRT.updateProj();
 }
 
+function getRandom2DVector(X, Y) {
+	rng = new Math.seedrandom(seed + X.toString() + Y.toString());
+	angle = rng() * 2 * Math.PI;
+	return [Math.cos(angle), Math.sin(angle)];
+}
+
+function get2DPerlinNoise(x, y)
+{
+	dot = function(a, b) {
+		return a[0] * b[0] + a[1] * b[1];
+	}
+
+	let X1 = Math.floor(x);
+	let X2 = X1 + 1;
+	let Y1 = Math.floor(y);
+	let Y2 = Y1 + 1;
+
+	let X1Y1 = getRandom2DVector(X1, Y1);
+	let X2Y1 = getRandom2DVector(X2, Y1);
+	let X1Y2 = getRandom2DVector(X1, Y2);
+	let X2Y2 = getRandom2DVector(X2, Y2);
+
+	let X1Y1_posvec = [x - X1, y - Y1];
+	let X2Y1_posvec = [X2 - x, y - Y1];
+	let X1Y2_posvec = [x - X1, Y2 - y];
+	let X2Y2_posvec = [X2 - x, Y2 - y];
+
+	let X1Y1_dot = dot(X1Y1, X1Y1_posvec);
+	let X2Y1_dot = dot(X2Y1, X2Y1_posvec);
+	let X1Y2_dot = dot(X1Y2, X1Y2_posvec);
+	let X2Y2_dot = dot(X2Y2, X2Y2_posvec);
+
+	let X1Y1_X2Y1 = X1Y1_dot + (X2Y1_dot - X1Y1_dot) * (x - X1);
+	let X1Y2_X2Y2 = X1Y2_dot + (X2Y2_dot - X1Y2_dot) * (x - X1);
+
+	return X1Y1_X2Y1 + (X1Y2_X2Y2 - X1Y1_X2Y1) * (y - Y1);
+}
+
+function getChunkPosHeightMap(X, Z)
+{
+	let heightMap = new Array(16 * 16).fill(0);
+	frequency = 10;
+	
+	for (let x = 0; x < 16; x++) {
+		for (let z = 0; z < 16; z++) {
+			noise = get2DPerlinNoise((X + x) / frequency, (Z + z) / frequency);
+			noise = (noise + 1) / 2;
+			let height = Math.floor(noise * maxTerrainHeight);
+			heightMap[x + z * 16] = height;
+		}
+	}
+	return heightMap;
+}
+
 function generateNewChunk(X, Y, Z) {
 	let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
-	if (Y < 0)
-		chunkData.fill(1);
+
+	let heightMap = getChunkPosHeightMap(X, Z);
+	for (let x = 0; x < 16; x++) {
+		for (let z = 0; z < 16; z++) {
+			for (let y = 0; y < 16 && y + Y * 16 <= heightMap[x + 16 * z]; y++)
+				chunkData[chunkInd(x, y, z)] = 1;
+		}
+	}
+
+	// if (Y < 0)
+		// chunkData.fill(1);
 	chunks[chunkCoordString(X, Y, Z)] = chunkData;
 }
 
-function getCubeId(X, Y, Z) {
+function getCubeId(X, Y, Z)
+{
 	let chunkX = Math.floor(X / 16);
 	let chunkY = Math.floor(Y / 16);
 	let chunkZ = Math.floor(Z / 16);
@@ -416,7 +490,8 @@ function getCubeId(X, Y, Z) {
 	return chunks[chunkCoordStr][chunkInd(X - (chunkX * 16), Y - (chunkY * 16), Z - (chunkZ * 16))];;
 }
 
-function putCubeID(X, Y, Z, id) {
+function putCubeID(X, Y, Z, id)
+{
 	let chunkX = Math.floor(X / 16);
 	let chunkY = Math.floor(Y / 16);
 	let chunkZ = Math.floor(Z / 16);
@@ -483,6 +558,32 @@ function getMinZeroedNoColDir(aabb, dir, blocksToCheck) {
 			}
 		}
 	}
+}
+
+function checkBlockCollisions(aabb) {
+	let lowerCorner = aabb[0];
+	let upperCorner = aabb[1];
+	let upperX = Math.floor(upperCorner[0]) + 1;
+	let lowerX = Math.floor(lowerCorner[0]) - 1;
+	let upperY = Math.floor(upperCorner[1]) + 1;
+	let lowerY = Math.floor(lowerCorner[1]) - 1;
+	let upperZ = Math.floor(upperCorner[2]) + 1;
+	let lowerZ = Math.floor(lowerCorner[2]) - 1;
+
+	// Blocks to check could be minimized by taking dir into account but leave it like this for now
+	let blocksToCheck = [];
+	for (let x = lowerX; x <= upperX; x++) {
+		for (let y = lowerY; y <= upperY; y++) {
+			for (let z = lowerZ; z <= upperZ; z++) {
+				if (getCubeId(x, y, z) != 0) {
+					if (checkAABBCollision(lowerCorner, upperCorner, [x, y, z], [x + 1, y + 1, z + 1]))
+						return true;
+				}
+			}
+		}
+	}
+
+	return false;
 }
 
 function applyBlockCollisions(aabb, dir) {
