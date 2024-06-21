@@ -188,11 +188,11 @@ var screenQuad = {
 function InitShaderScripts()
 {
 	let client1 = new XMLHttpRequest();
-	client1.open('GET', '/shaders/voxel_raycast.vs');
+	client1.open('GET', 'shaders/voxel_raycast.vs');
 	client1.onload = function(){
 		raytraceVS = client1.responseText;
 		let client2 = new XMLHttpRequest();
-		client2.open('GET', '/shaders/voxel_raycast.fs');
+		client2.open('GET', 'shaders/voxel_raycast.fs');
 		client2.onload = function() {
 			raytraceFS = client2.responseText;
 			primaryRT.init();
