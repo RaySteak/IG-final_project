@@ -474,7 +474,7 @@ function generateNewChunk(X, Y, Z) {
 	for (let x = 0; x < 16; x++) {
 		for (let z = 0; z < 16; z++) {
 			for (let y = 0; y < 16 && y + Y * 16 <= heightMap[x + 16 * z]; y++)
-				chunkData[chunkInd(x, y, z)] = 6;
+				chunkData[chunkInd(x, y, z)] = 1;
 		}
 	}
 
