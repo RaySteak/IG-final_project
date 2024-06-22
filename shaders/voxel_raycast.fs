@@ -7,9 +7,13 @@ precision highp sampler3D;
 #define TYPE_STOP -1
 #define TYPE_REFRACTION 0
 #define TYPE_REFLECTION 1
+#define TYPE_INTERNAL_REFLECTION 2
 
-#define NUM_LIGHTS 1
-#define RENDER_DISTANCE_CHUNKS 2
+#define BIAS 0.001
+
+#define RENDER_DISTANCE_CHUNKS <render-distance-chunks>
+#define RENDER_DISTANCE_GRID_HITS <render-distance-grid-hits>
+#define BOUNCE_LIMIT <bounce-limit>
 
 in vec3 ray_pos;
 in vec3 ray_dir;
@@ -54,7 +58,6 @@ struct HitInfo {
 	int cube_id_hit;
 };
 
-uniform Light  lights [ NUM_LIGHTS  ];
 uniform samplerCube envMap;
 uniform sampler2D bumpMap;
 uniform sampler3D visibleChunks;
@@ -77,14 +80,11 @@ Material get_material(int id)
 		// material.k_d = vec3(0.0, 0.3, 0.0);
 		// material.k_s = vec3(1.0, 1.0, 1.0);
 		material.solidity = 0.0;
-		return material;
 	} else if (id == 2) {
 		material.k_d = vec3(1.0, 0.0, 0.0);
-		return material;
 	} else if (id == 3) {
 		material.is_refractive = true;
 		material.refraction_ind = 1.1;
-		return material;
 	} else if (id == 4) {
 		material.is_refractive = true;
 		material.refraction_ind = 1.1;
@@ -92,14 +92,20 @@ Material get_material(int id)
 		material.k_s = vec3(1.0, 1.0, 0.0);
 		// material.k_d = vec3(1.0, 1.0, 0.0);
 		// material.k_d = vec3(0.0, 1.0, 1.0);
-		material.k_d = vec3(1.0, 0.0, 1.0);
-		return material;
-	} else
-	{
+		material.k_d = vec3(1.0, 0, 0);
+	} else if (id == 5) {
+		material.is_reflective = true;
+		material.k_d = vec3(0.0, 0.0, 0.0);
+		material.k_s = vec3(1.0, 1.0, 1.0);
+	} else if (id == 6) {
+		material.is_reflective = true;
+		material.k_d = vec3(0.0, 0.0, 1.0);
+		material.k_s = vec3(1.0, 1.0, 1.0);
+	} else {
 		material.is_refractive = true;
 		material.refraction_ind = 1.0;
-		return material;
 	}
+	return material;
 }
 
 int get_cube_id(int x, int y, int z, inout Material material)
@@ -122,7 +128,8 @@ int get_cube_id(int x, int y, int z, inout Material material)
 		return 0;
 	}
 
-	int cubeId = int(texture(visibleChunks, vec3(adjustedPos) / float(visibleChunksLen)).r * 255.0);
+	// 0.5 bias is added because OpenGL samples at texel centers
+	int cubeId = int(texture(visibleChunks, (vec3(adjustedPos) + 0.5) / float(visibleChunksLen)).r * 255.0);
 	material = get_material(cubeId);
 
 	return cubeId;
@@ -130,7 +137,6 @@ int get_cube_id(int x, int y, int z, inout Material material)
 
 bool castRay(Ray ray, inout HitInfo hitInfo)
 {
-	const int render_distance = 30;
 	Material material_prev, material_cur;
 
 
@@ -152,7 +158,7 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 
     bool hit = false;
 
-    for (int i = 0; i < render_distance; i++) {
+    for (int i = 0; i < RENDER_DISTANCE_GRID_HITS; i++) {
 		int oldX = X;
 		int oldY = Y;
 		int oldZ = Z;
@@ -269,11 +275,9 @@ vec3 getMaterialColor(Material m, vec2 tex_pos)
 
 vec3 TraceRayFurther(Ray ray, vec3 k_s)
 {
-	const float bias = 0.001; // TODO: define this somewhere else, unite with other definition
-	const int bounceLimit = 5; // TODO: define this somewhere else
 
 	vec3 color = vec3(0.0, 0.0, 0.0);
-	for (int i = 0; i < bounceLimit; i++) {
+	for (int i = 0; i < BOUNCE_LIMIT; i++) {
 		HitInfo hitInfo;
 		int type_change = TYPE_STOP; 
 		bool hit = castRay(ray, hitInfo);
@@ -288,21 +292,31 @@ vec3 TraceRayFurther(Ray ray, vec3 k_s)
 			// Total internal reflection
 			if (length(new_dir) == 0.0) {
 				new_dir = reflect(ray.dir, hitInfo.normal);
-				type_change = TYPE_REFLECTION;
+				type_change = TYPE_INTERNAL_REFLECTION;
 			}
 			ray.dir = new_dir;
+		} else if (hitInfo.material_hit.is_reflective) {
+			type_change = TYPE_REFLECTION;
+			ray.dir = reflect(ray.dir, hitInfo.normal);
 		}
+
 		if (type_change == TYPE_STOP) {
 			color += k_s * getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
 			break;
 		} else if (type_change == TYPE_REFRACTION) {
-			ray.pos = hitInfo.position - hitInfo.normal * bias;
+			ray.pos = hitInfo.position - hitInfo.normal * BIAS;
 
 			vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
 			color += k_s * color_hit * hitInfo.material_hit.solidity;
 			k_s *= color_hit * (1.0 - hitInfo.material_hit.solidity);
-		} else {
-			ray.pos = hitInfo.position + hitInfo.normal * bias;
+		} else if (type_change == TYPE_REFLECTION || type_change == TYPE_INTERNAL_REFLECTION) {
+			ray.pos = hitInfo.position + hitInfo.normal * BIAS;
+
+			if (type_change == TYPE_REFLECTION) {
+				vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
+				color += k_s * color_hit;
+				k_s *= hitInfo.material_hit.k_s;
+			}
 		}
 	}
 	return color;
@@ -310,10 +324,7 @@ vec3 TraceRayFurther(Ray ray, vec3 k_s)
 
 vec3 TraceRay(Ray ray)
 {
-	const float bias = 0.001; // TODO: define this somewhere else, unite with other definition
-	const int bounceLimit = 5; // TODO: define this somewhere else
-
-	vec3 k_s = vec3(1.0, 1.0, 1.0); // TODO: do something with this
+	vec3 k_s = vec3(1.0, 1.0, 1.0);
 	vec3 color = vec3(0.0, 0.0, 0.0);
 
 	HitInfo hitInfo;
@@ -328,7 +339,7 @@ vec3 TraceRay(Ray ray)
 		vec3 reflected = reflect(ray.dir, hitInfo.normal);
 
 		Ray reflected_ray;
-		reflected_ray.pos = hitInfo.position + hitInfo.normal * bias;
+		reflected_ray.pos = hitInfo.position + hitInfo.normal * BIAS;
 		reflected_ray.dir = reflected;
 
 		// Total internal reflection
@@ -341,7 +352,7 @@ vec3 TraceRay(Ray ray)
 			float R = R0 + (1.0 - R0) * pow(1.0 - dot(normalize(-ray.dir), hitInfo.normal), 5.0);
 
 			Ray refracted_ray;
-			refracted_ray.pos = hitInfo.position - hitInfo.normal * bias;
+			refracted_ray.pos = hitInfo.position - hitInfo.normal * BIAS;
 			refracted_ray.dir = refracted;
 			
 			vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);
@@ -360,7 +371,7 @@ vec3 TraceRay(Ray ray)
 	} else if (hitInfo.material_hit.is_reflective) {
 		vec3 reflected = reflect(ray.dir, hitInfo.normal);
 		Ray reflected_ray;
-		reflected_ray.pos = hitInfo.position + hitInfo.normal * bias;
+		reflected_ray.pos = hitInfo.position + hitInfo.normal * BIAS;
 		reflected_ray.dir = reflected;
 
 		vec3 color_hit = getMaterialColor(hitInfo.material_hit, hitInfo.tex_pos);

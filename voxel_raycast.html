@@ -10,17 +10,16 @@
 
 const transZmin = 1.001;
 const transZmax = 10;
-const maxBounceLimit = 16;
 
 const sensitivityX = 5, sensitivityY = 5;
-const moveSpeed = 3;
+const moveSpeed = 4;
 const interactDistance = 5;
 const playerHeight = 1.8;
 const eyeHeight = 1.6;
 const playerWidth = 0.6;
 
 const maxTerrainHeight = 20;
-const seed = "seed";
+var seed = "seed";
 
 var raytraceVS, raytraceFS;
 
@@ -44,9 +43,20 @@ const maxFallSpeed = 20;
 var flight = false;
 var noClip = false;
 
-var primaryRT, secondaryRT;
+var primaryRT;
+var resetShaders = false;
 
-var renderDistance = 2; // in chunks (considering current chunk as well)
+const minRenderDistanceChunks = 1;
+const maxRenderDistanceChunks = 8;
+var renderDistanceChunks = 2; // in chunks (considering current chunk as well)
+
+const minRenderDistanceGridHits = 5;
+const maxRenderDistanceGridHits = 100;
+var renderDistanceGridHits = 30;
+
+const minBounceLimit = 1;
+const maxBounceLimit = 10;
+var bounceLimit = 5;
 
 var keyStates = new Array(256).fill(false);
 var placeBlock = false;
@@ -67,13 +77,17 @@ class RayTracer
 {
 	constructor()
 	{
-		this.bounceLimit = 5;
 	}
+
 	init()
 	{
 		if ( this.prog ) gl.deleteProgram( this.prog );
 		
-		this.prog = InitShaderProgram(raytraceVS, raytraceFS);
+		let raytraceFSFilledIn = raytraceFS.replace('<render-distance-chunks>', renderDistanceChunks.toString());
+		raytraceFSFilledIn = raytraceFSFilledIn.replace('<render-distance-grid-hits>', renderDistanceGridHits.toString());
+		raytraceFSFilledIn = raytraceFSFilledIn.replace('<bounce-limit>', bounceLimit.toString());
+
+		this.prog = InitShaderProgram(raytraceVS, raytraceFSFilledIn);
 		if (!this.prog)
 			return;
 		
@@ -115,11 +129,11 @@ class RayTracer
 		let curChunkX = Math.floor(cameraPos[0] / 16);
 		let curChunkY = Math.floor(cameraPos[1] / 16);
 		let curChunkZ = Math.floor(cameraPos[2] / 16);
-		let chunksSideLen = renderDistance * 2 - 1;
+		let chunksSideLen = renderDistanceChunks * 2 - 1;
 		let chunkDataSideLen = chunksSideLen * 16;
-		let startCornerX = (curChunkX - (renderDistance - 1)) * 16;
-		let startCornerY = (curChunkY - (renderDistance - 1)) * 16;
-		let startCornerZ = (curChunkZ - (renderDistance - 1)) * 16;
+		let startCornerX = (curChunkX - (renderDistanceChunks - 1)) * 16;
+		let startCornerY = (curChunkY - (renderDistanceChunks - 1)) * 16;
+		let startCornerZ = (curChunkZ - (renderDistanceChunks - 1)) * 16;
 
 		let chunkData = new Uint8Array(chunksSideLen * chunksSideLen * chunksSideLen * 4096);
 		
@@ -134,14 +148,7 @@ class RayTracer
 
 		gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, chunkDataSideLen, chunkDataSideLen, chunkDataSideLen, 0, gl.RED, gl.UNSIGNED_BYTE, chunkData);
 	}
-	setBounceLimit( bounceLimit )
-	{
-		this.bounceLimit = bounceLimit;
-		if (!this.prog)
-			return;
-		gl.useProgram(this.prog);
-		gl.uniform1i(gl.getUniformLocation(this.prog, 'bounceLimit'), this.bounceLimit);
-	}
+
 	draw(trans)
 	{
 		if (!this.prog)
@@ -312,9 +319,11 @@ function chunkCoordString(x, y, z) {
 	return x.toString() + ":" + y.toString() + ":" + z.toString();
 }
 
-// function chunkCoordString(v) {
-	// return chunkCoordString(v[0], v[1], v[2]);
-// }
+function placePlayerInWorld() {
+	cameraPos[1] = playerHeight - eyeHeight + 0.001;
+	while (checkBlockCollisions(getPlayerAABB()))
+		cameraPos[1] += 1;
+}
 
 function InitWorld()
 {
@@ -324,10 +333,7 @@ function InitWorld()
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-	cameraPos[1] = playerHeight - eyeHeight + 0.001;
-
-	while (checkBlockCollisions(getPlayerAABB()))
-		cameraPos[1] += 1;
+	placePlayerInWorld();
 
 	// getCubeId(0, 0, 0);
 	// let chunkData = new Uint8Array(16 * 16 * 16).fill(0);
@@ -468,7 +474,7 @@ function generateNewChunk(X, Y, Z) {
 	for (let x = 0; x < 16; x++) {
 		for (let z = 0; z < 16; z++) {
 			for (let y = 0; y < 16 && y + Y * 16 <= heightMap[x + 16 * z]; y++)
-				chunkData[chunkInd(x, y, z)] = 1;
+				chunkData[chunkInd(x, y, z)] = 6;
 		}
 	}
 
@@ -832,18 +838,17 @@ async function RunRayTracer()
 		}
 
 		gl.deleteSync(sync);
+
+		// If shader needs resetting, reset it
+		if (resetShaders) {
+			primaryRT.init();
+			resetShaders = false;
+		}
 	}
 }
 
 window.onload = function() {
 	InitWebGL();
-	canvas.zoom = function( s ) {
-		transZ *= s/canvas.height + 1;
-		if ( transZ < transZmin ) transZ = transZmin;
-		if ( transZ > transZmax ) transZ = transZmax;
-		UpdateProjectionMatrix();
-	}
-	canvas.onwheel = function() { canvas.zoom(0.3*event.deltaY); }
 	canvas.onmousedown = function() {
 		var cx = event.clientX;
 		var cy = event.clientY;
@@ -890,6 +895,12 @@ window.onload = function() {
 		case 52: // 4
 			curBlock = 4;
 			break;
+		case 53: // 5
+			curBlock = 5;
+			break;
+		case 54: // 6
+			curBlock = 6;
+			break;
 		case 70: // F
 			flight = !flight;
 			break;
@@ -932,48 +943,72 @@ function UseEnvironmentMap( param )
 	DrawScene();
 }
 
-function IncBounceLimit( inc )
+function IncRenderDistChunks(inc)
 {
-	var b = parseInt(document.getElementById('bounces-value').innerText);
-	b += inc;
-	if ( b < 0 ) b = 0;
-	if ( b > maxBounceLimit ) b = maxBounceLimit;
-	SetBounceLimit( b );
-	document.getElementById('bounces-range').value = b;
+	renderDistanceChunks += inc;
+	if (renderDistanceChunks < minRenderDistanceChunks)
+		renderDistanceChunks = minRenderDistanceChunks;
+	else if (renderDistanceChunks > maxRenderDistanceChunks)
+		renderDistanceChunks = maxRenderDistanceChunks;
+
+	document.getElementById('render-dist-chunks-val').innerHTML = renderDistanceChunks;
+	document.getElementById('render-dist-chunks-range').value = renderDistanceChunks;
+	resetShaders = true;	
 }
 
-function SetBounceLimit( b )
+function SetRenderDistChunks(r)
 {
-	document.getElementById('bounces-value').innerText = b;
-	primaryRT.setBounceLimit( b );
-	secondaryRT.setBounceLimit( b );
-	UpdateProjectionMatrix();
-	DrawScene();
+	renderDistanceChunks = parseInt(r);
+	document.getElementById('render-dist-chunks-val').innerHTML = renderDistanceChunks;
+	resetShaders = true;
 }
 
-function IncCount( inc )
+function IncRenderDistGridHits(inc)
 {
-	var c = parseInt(document.getElementById('count-value').innerText);
-	c += inc;
-	if ( c < 1 ) c = 1;
-	if ( c > 100 ) c = 100;
-	SetCount( c );
-	document.getElementById('count-range').value = c;
-	NewScene();
+	renderDistanceGridHits += inc;
+	if (renderDistanceGridHits < minRenderDistanceGridHits)
+		renderDistanceGridHits = minRenderDistanceGridHits;
+	else if (renderDistanceGridHits > maxRenderDistanceGridHits)
+		renderDistanceGridHits = maxRenderDistanceGridHits;
+
+	document.getElementById('render-dist-grid-hits-val').innerHTML = renderDistanceGridHits;
+	document.getElementById('render-dist-grid-hits-range').value = renderDistanceGridHits;
+	resetShaders = true;	
 }
 
-function SetCount( c )
+function SetRenderDistGridHits(r)
 {
-	document.getElementById('count-value').innerText = c;
-	sphereCount = c;
+	renderDistanceGridHits = parseInt(r);
+	document.getElementById('render-dist-grid-hits-val').innerHTML = renderDistanceGridHits;
+	resetShaders = true;
 }
 
-function NewScene()
+function IncBounceLimit(inc)
 {
-	InitScene();
-	primaryRT.init();
-	secondaryRT.init();
-	DrawScene();
+	bounceLimit += inc;
+	if (bounceLimit < minBounceLimit)
+		bounceLimit = minBounceLimit;
+	else if (bounceLimit > maxBounceLimit)
+		bounceLimit = maxBounceLimit;
+
+	document.getElementById('bounce-limit-val').innerHTML = bounceLimit;
+	document.getElementById('bounce-limit-range').value = bounceLimit;
+	resetShaders = true;	
+}
+
+function SetBounceLimit(b)
+{
+	bounceLimit = parseInt(b);
+	document.getElementById('bounce-limit-val').innerHTML = bounceLimit;
+	resetShaders = true;
+}
+
+function ResetWorld()
+{
+	chunks = {};
+	seed = Math.random().toString();
+	primaryRT.updateChunk();
+	placePlayerInWorld();
 }
 
 function ShowControls()
@@ -1099,14 +1134,10 @@ canvas {
 <div id="buttons"><input type="button" value="V" onclick="ShowControls()"/></div>
 <div id="controls">
 <div class="control-group">
-<div class="control"><input id="raster" name="method" type="radio" onchange="DrawScene()" /><label for="raster"> Rasterization</label><br/></div>
-<div class="control"><input id="raytrace" name="method" type="radio" onchange="DrawScene()" checked /><label for="raytrace"> Ray Tracing</label><br/></div>
-<div class="control"><input id="secondary" name="method" type="radio" onchange="DrawScene()" /><label for="secondary"> Rasterization + Ray Tracing</label><br/></div>
-<div class="control"><hr/></div>
-<div class="control"><input id="envmap" name="envmap" type="checkbox" onchange="UseEnvironmentMap(this)" checked /><label for="envmap"> Environment Map</label></div>
-<div class="control"><span id="bounces-label">Bounce Limit:</span><span class="val"><span class="value" id="bounces-value">5</span><input type="button" value="+" onclick="IncBounceLimit(1)"><input type="button" value="&ndash;" onclick="IncBounceLimit(-1)"></span><input id="bounces-range" type="range" min="0" max="16" value="5" oninput="SetBounceLimit(this.value)"/></div>
-<div class="control"><span id="count-label">Sphere Count:</span><span class="val"><span class="value" id="count-value">10</span><input type="button" value="+" onclick="IncCount(1)"><input type="button" value="&ndash;" onclick="IncCount(-1)"></span><input id="count-range" type="range" min="1" max="100" value="10" oninput="SetCount(this.value)" onchange="NewScene()"/></div>
-<div class="control"><input type="button" class="btn" value="New Random Scene" onclick="NewScene()"></div>
+<div class="control"><span id="render-dist-chunks-label">Render distance (chunks):</span><span class="val"><span class="value" id="render-dist-chunks-val">2</span><input type="button" value="+" onclick="IncRenderDistChunks(1)"><input type="button" value="&ndash;" onclick="IncRenderDistChunks(-1)"></span><input id="render-dist-chunks-range" type="range" min="1" max="8" value="2" oninput="SetRenderDistChunks(this.value)"/></div>
+<div class="control"><span id="render-dist-grid-hits-label">Render distance (grid hits):</span><span class="val"><span class="value" id="render-dist-grid-hits-val">30</span><input type="button" value="+" onclick="IncRenderDistGridHits(1)"><input type="button" value="&ndash;" onclick="IncRenderDistGridHits(-1)"></span><input id="render-dist-grid-hits-range" type="range" min="5" max="100" value="30" oninput="SetRenderDistGridHits(this.value)"/></div>
+<div class="control"><span id="bounce-limit-label">Render distance (grid hits):</span><span class="val"><span class="value" id="bounce-limit-val">5</span><input type="button" value="+" onclick="IncBounceLimit(1)"><input type="button" value="&ndash;" onclick="IncBounceLimit(-1)"></span><input id="bounce-limit-range" type="range" min="1" max="10" value="5" oninput="SetBounceLimit(this.value)"/></div>
+<div class="control"><input type="button" class="btn" value="Generate New World" onclick="ResetWorld()"></div>
 </div>
 </div>
 </div>
