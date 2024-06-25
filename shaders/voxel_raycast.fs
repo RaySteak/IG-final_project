@@ -261,7 +261,7 @@ bool castRay(Ray ray, inout HitInfo hitInfo)
 
 vec3 skybox(vec3 dir)
 {
-	// return sin(dir * 3.14159265 * 0.001) * 0.5 + 0.5;
+	// return sin(dir * 3.14159265 * 1.0) * 0.5 + 0.5;
 	return texture(envMap, dir).rgb;
 }
 
